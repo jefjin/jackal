@@ -46,7 +46,47 @@ Common Options:
     -v, --version          Show version
 `
 
-func main() {
+var initLogger = func(config *loggerConfig, stdOut io.Writer) (log.Logger, error) {
+	var logFiles []io.WriteCloser
+	if len(config.LogPath) > 0 {
+		// create logFile intermediate directories.
+		if err := os.MkdirAll(filepath.Dir(config.LogPath), os.ModePerm); err != nil {
+			return nil, err
+		}
+		f, err := os.OpenFile(config.LogPath, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0666)
+		if err != nil {
+			return nil, err
+		}
+		logFiles = append(logFiles, f)
+	}
+	logger, err := log.New(config.Level, stdOut, logFiles...)
+	if err != nil {
+		return nil, err
+	}
+	return logger, nil
+}
+
+var initStorage = func(config *storage.Config) (storage.Storage, error) {
+	return storage.New(config)
+}
+
+type application struct {
+	stdOut   io.Writer
+	logger   log.Logger
+	storage  storage.Storage
+	router   *router.Router
+	mods     *module.Modules
+	comps    *component.Components
+	s2s      *s2s.S2S
+	c2s      *c2s.C2S
+	debugSrv *http.Server
+}
+
+func newApplication(stdOut io.Writer) *application {
+	return &application{stdOut: stdOut}
+}
+
+func (a *application) run() error {
 	var configFile string
 	var showVersion bool
 	var showUsage bool
@@ -59,124 +99,100 @@ func main() {
 	flag.StringVar(&configFile, "c", "/etc/jackal/jackal.yml", "Configuration file path.")
 	flag.Usage = func() {
 		for i := range logoStr {
-			fmt.Fprintf(os.Stdout, "%s\n", logoStr[i])
+			fmt.Fprintf(a.stdOut, "%s\n", logoStr[i])
 		}
-		fmt.Fprintf(os.Stdout, "%s\n", usageStr)
+		fmt.Fprintf(a.stdOut, "%s\n", usageStr)
 	}
 	flag.Parse()
 
 	// print usage
 	if showUsage {
 		flag.Usage()
-		return
+		return nil
 	}
-
 	// print version
 	if showVersion {
-		fmt.Fprintf(os.Stdout, "jackal version: %v\n", version.ApplicationVersion)
-		return
+		fmt.Fprintf(a.stdOut, "jackal version: %v\n", version.ApplicationVersion)
+		return nil
 	}
 	// load configuration
 	var cfg config
-	if err := cfg.FromFile(configFile); err != nil {
-		logError(err)
-		return
-	}
-	// initialize logger
-	var logFiles []io.WriteCloser
-	if len(cfg.Logger.LogPath) > 0 {
-		// create logFile intermediate directories.
-		if err := os.MkdirAll(filepath.Dir(cfg.Logger.LogPath), os.ModePerm); err != nil {
-			logError(err)
-			return
-		}
-		f, err := os.OpenFile(cfg.Logger.LogPath, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0666)
-		if err != nil {
-			logError(err)
-			return
-		}
-		logFiles = append(logFiles, f)
-	}
-	logger, err := log.New(cfg.Logger.Level, os.Stdout, logFiles...)
+	err := cfg.FromFile(configFile)
 	if err != nil {
-		logError(err)
+		return err
 	}
-	log.Set(logger)
+	// create PID file
+	if err := a.createPIDFile(cfg.PIDFile); err != nil {
+		return err
+	}
+
+	// initialize logger
+	a.logger, err = initLogger(&cfg.Logger, a.stdOut)
+	if err != nil {
+		return err
+	}
+	log.Set(a.logger)
 	defer log.Unset()
 
-	s, err := storage.New(&cfg.Storage)
+	// initialize storage
+	a.storage, err = initStorage(&cfg.Storage)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	storage.Set(s)
+	storage.Set(a.storage)
 	defer storage.Unset()
 
 	// initialize router
-	r, err := router.New(&cfg.Router)
+	a.router, err = router.New(&cfg.Router)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	// initialize modules & components...
-	mods := module.New(&cfg.Modules, r)
-	defer mods.Close()
+	a.mods = module.New(&cfg.Modules, a.router)
+	defer a.mods.Close()
 
-	comps := component.New(&cfg.Components, mods.DiscoInfo)
-	defer comps.Close()
+	a.comps = component.New(&cfg.Components, a.mods.DiscoInfo)
+	defer a.comps.Close()
 
-	// create PID file
-	if err := createPIDFile(cfg.PIDFile); err != nil {
-		log.Warnf("%v", err)
-	}
-	// start serving...
-	for i := range logoStr {
-		log.Infof("%s", logoStr[i])
-	}
-	log.Infof("")
-	log.Infof("jackal %v\n", version.ApplicationVersion)
-
-	// initialize debug server...
-	if cfg.Debug.Port > 0 {
-		go initDebugServer(cfg.Debug.Port)
-	}
+	a.printLogo()
 
 	// start serving s2s...
-	s2s := s2s.New(cfg.S2S, mods, r)
-	if s2s.Enabled() {
-		r.SetS2SOutProvider(s2s)
-
-		s2s.Start()
-		defer s2s.Stop()
+	a.s2s = s2s.New(cfg.S2S, a.mods, a.router)
+	if a.s2s.Enabled() {
+		a.router.SetS2SOutProvider(a.s2s)
+		a.s2s.Start()
+		defer a.s2s.Stop()
 
 	} else {
 		log.Infof("s2s disabled")
 	}
 
 	// start serving c2s...
-	c2s, err := c2s.New(cfg.C2S, mods, comps, r)
+	a.c2s, err = c2s.New(cfg.C2S, a.mods, a.comps, a.router)
 	if err != nil {
 		log.Fatal(err)
 	}
-	c2s.Start()
-	defer c2s.Stop()
+	a.c2s.Start()
+	defer a.c2s.Stop()
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
-	<-c
-}
-
-var debugSrv *http.Server
-
-func initDebugServer(port int) {
-	debugSrv = &http.Server{}
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		log.Fatalf("%v", err)
+	// initialize debug server...
+	if cfg.Debug.Port > 0 {
+		if err := a.initDebugServer(cfg.Debug.Port); err != nil {
+			return err
+		}
+		defer a.debugSrv.Close()
 	}
-	debugSrv.Serve(ln)
+
+	a.waitForStopSignal()
+	return nil
 }
 
-func createPIDFile(pidFile string) error {
+func (a *application) showVersion() {
+	fmt.Fprintf(a.stdOut, "jackal version: %v\n", version.ApplicationVersion)
+}
+
+func (a *application) createPIDFile(pidFile string) error {
 	if len(pidFile) == 0 {
 		return nil
 	}
@@ -196,6 +212,33 @@ func createPIDFile(pidFile string) error {
 	return nil
 }
 
-func logError(err error) {
-	fmt.Fprintf(os.Stderr, "jackal: %v\n", err)
+func (a *application) printLogo() {
+	for i := range logoStr {
+		log.Infof("%s", logoStr[i])
+	}
+	log.Infof("")
+	log.Infof("jackal %v\n", version.ApplicationVersion)
+}
+
+func (a *application) initDebugServer(port int) error {
+	a.debugSrv = &http.Server{}
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return err
+	}
+	go a.debugSrv.Serve(ln)
+	return nil
+}
+
+func (a *application) waitForStopSignal() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	<-c
+}
+
+func main() {
+	if err := newApplication(os.Stdout).run(); err != nil {
+		fmt.Fprintf(os.Stderr, "%v", err)
+		os.Exit(-1)
+	}
 }

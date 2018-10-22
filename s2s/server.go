@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/ortuman/jackal/errors"
 	"github.com/ortuman/jackal/log"
 	"github.com/ortuman/jackal/module"
 	"github.com/ortuman/jackal/router"
@@ -45,7 +46,28 @@ func (s *server) start() {
 
 func (s *server) stop() error {
 	if atomic.CompareAndSwapUint32(&s.listening, 1, 0) {
-		return s.ln.Close()
+		// stop listening...
+		if err := s.ln.Close(); err != nil {
+			return err
+		}
+		// close all connections...
+		outConnCount := 0
+		s.outConns.Range(func(_, v interface{}) bool {
+			stm := v.(*inStream)
+			stm.Disconnect(streamerror.ErrSystemShutdown)
+			outConnCount++
+			return true
+		})
+		log.Infof("%s: shutting down... closed %d out connection(s)", s.cfg.ID, outConnCount)
+
+		inConnCount := 0
+		s.inConns.Range(func(_, v interface{}) bool {
+			stm := v.(*inStream)
+			stm.Disconnect(streamerror.ErrSystemShutdown)
+			inConnCount++
+			return true
+		})
+		log.Infof("%s: shutting down... closed %d in connection(s)", s.cfg.ID, inConnCount)
 	}
 	return nil
 }
