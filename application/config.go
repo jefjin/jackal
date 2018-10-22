@@ -3,7 +3,7 @@
  * See the LICENSE file for more information.
  */
 
-package main
+package application
 
 import (
 	"bytes"
@@ -28,8 +28,8 @@ type loggerConfig struct {
 	LogPath string `yaml:"log_path"`
 }
 
-// config represents a global configuration.
-type config struct {
+// Config represents a global configuration.
+type Config struct {
 	PIDFile    string           `yaml:"pid_path"`
 	Debug      debugConfig      `yaml:"debug"`
 	Logger     loggerConfig     `yaml:"logger"`
@@ -43,7 +43,7 @@ type config struct {
 
 // FromFile loads default global configuration from
 // a specified file.
-func (cfg *config) FromFile(configFile string) error {
+func (cfg *Config) FromFile(configFile string) error {
 	b, err := ioutil.ReadFile(configFile)
 	if err != nil {
 		return err
@@ -53,6 +53,6 @@ func (cfg *config) FromFile(configFile string) error {
 
 // FromBuffer loads default global configuration from
 // a specified byte buffer.
-func (cfg *config) FromBuffer(buf *bytes.Buffer) error {
+func (cfg *Config) FromBuffer(buf *bytes.Buffer) error {
 	return yaml.Unmarshal(buf.Bytes(), cfg)
 }
