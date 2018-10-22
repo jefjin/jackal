@@ -71,7 +71,7 @@ var initStorage = func(config *storage.Config) (storage.Storage, error) {
 }
 
 type Application struct {
-	out      io.Writer
+	output   io.Writer
 	logger   log.Logger
 	storage  storage.Storage
 	router   *router.Router
@@ -82,26 +82,25 @@ type Application struct {
 	debugSrv *http.Server
 }
 
-func New(out io.Writer) *Application {
-	return &Application{out: out}
+func New(output io.Writer) *Application {
+	return &Application{output: output}
 }
 
 func (a *Application) Run() error {
 	var configFile string
-	var showVersion bool
-	var showUsage bool
+	var showVersion, showUsage bool
 
 	flag.BoolVar(&showUsage, "help", false, "Show this message")
 	flag.BoolVar(&showUsage, "h", false, "Show this message")
 	flag.BoolVar(&showVersion, "version", false, "Print version information.")
 	flag.BoolVar(&showVersion, "v", false, "Print version information.")
-	flag.StringVar(&configFile, "Config", "/etc/jackal/jackal.yml", "Configuration file path.")
+	flag.StringVar(&configFile, "config", "/etc/jackal/jackal.yml", "Configuration file path.")
 	flag.StringVar(&configFile, "c", "/etc/jackal/jackal.yml", "Configuration file path.")
 	flag.Usage = func() {
 		for i := range logoStr {
-			fmt.Fprintf(a.out, "%s\n", logoStr[i])
+			fmt.Fprintf(a.output, "%s\n", logoStr[i])
 		}
-		fmt.Fprintf(a.out, "%s\n", usageStr)
+		fmt.Fprintf(a.output, "%s\n", usageStr)
 	}
 	flag.Parse()
 
@@ -112,7 +111,7 @@ func (a *Application) Run() error {
 	}
 	// print version
 	if showVersion {
-		fmt.Fprintf(a.out, "jackal version: %v\n", version.ApplicationVersion)
+		fmt.Fprintf(a.output, "jackal version: %v\n", version.ApplicationVersion)
 		return nil
 	}
 	// load configuration
@@ -127,7 +126,7 @@ func (a *Application) Run() error {
 	}
 
 	// initialize logger
-	a.logger, err = initLogger(&cfg.Logger, a.out)
+	a.logger, err = initLogger(&cfg.Logger, a.output)
 	if err != nil {
 		return err
 	}
@@ -171,7 +170,7 @@ func (a *Application) Run() error {
 	// start serving c2s...
 	a.c2s, err = c2s.New(cfg.C2S, a.mods, a.comps, a.router)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	a.c2s.Start()
 	defer a.c2s.Stop()
@@ -183,13 +182,12 @@ func (a *Application) Run() error {
 		}
 		defer a.debugSrv.Close()
 	}
-
 	a.waitForStopSignal()
 	return nil
 }
 
 func (a *Application) showVersion() {
-	fmt.Fprintf(a.out, "jackal version: %v\n", version.ApplicationVersion)
+	fmt.Fprintf(a.output, "jackal version: %v\n", version.ApplicationVersion)
 }
 
 func (a *Application) createPIDFile(pidFile string) error {

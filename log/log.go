@@ -157,12 +157,11 @@ type record struct {
 }
 
 type logger struct {
-	level   Level
-	output  io.Writer
-	files   []io.WriteCloser
-	b       strings.Builder
-	recCh   chan record
-	closeCh chan bool
+	level  Level
+	output io.Writer
+	files  []io.WriteCloser
+	b      strings.Builder
+	recCh  chan record
 }
 
 func New(level string, output io.Writer, files ...io.WriteCloser) (Logger, error) {
@@ -176,7 +175,6 @@ func New(level string, output io.Writer, files ...io.WriteCloser) (Logger, error
 		files:  files,
 	}
 	l.recCh = make(chan record, logChanBufferSize)
-	l.closeCh = make(chan bool)
 	go l.loop()
 	return l, nil
 }
@@ -205,14 +203,21 @@ func (l *logger) Log(level Level, pkg string, file string, line int, format stri
 }
 
 func (l *logger) Close() error {
-	close(l.closeCh)
+	close(l.recCh)
 	return nil
 }
 
 func (l *logger) loop() {
 	for {
 		select {
-		case rec := <-l.recCh:
+		case rec, ok := <-l.recCh:
+			if !ok {
+				// close log files
+				for _, w := range l.files {
+					w.Close()
+				}
+				return
+			}
 			l.b.Reset()
 
 			l.b.WriteString(time.Now().Format("2006-01-02 15:04:05"))
@@ -243,12 +248,6 @@ func (l *logger) loop() {
 				exitHandler()
 			}
 			close(rec.continueCh)
-
-		case <-l.closeCh:
-			for _, w := range l.files {
-				w.Close()
-			}
-			return
 		}
 	}
 }
