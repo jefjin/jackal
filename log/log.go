@@ -93,6 +93,7 @@ func Fatalf(format string, args ...interface{}) {
 		ci := getCallerInfo()
 		inst.Log(FatalLevel, ci.pkg, ci.filename, ci.line, format, args...)
 	}
+	return
 }
 
 // Error writes an error value to configured logger.
